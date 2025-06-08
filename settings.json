@@ -1,0 +1,8 @@
+{
+    "data": {
+        "raw_data_url": "https://archive.ics.uci.edu/ml/machine-learning-databases/iris/iris.data",
+        "train_test_split": 0.8,
+        "train_file": "data/iris_train_data.csv",
+        "inference_file": "data/iris_inference_data.csv"
+    }
+}
