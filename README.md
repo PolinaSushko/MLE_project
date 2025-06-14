@@ -63,6 +63,15 @@ docker build -t iris-training -f ./training/Dockerfile .
 # Run training
 docker run -it iris-training python training/train.py /bin/bash
 ```
+Then, move the trained model from the directory inside the Docker container /app/models to the local machine using:
+```
+# List all containers
+docker ps -a
+
+# Copy from the stopped container 
+# Replace <container_id> with your Docker container ID
+docker cp <container_id>:/app/models/iris_classifier.pth ./models/iris_classifier.pth
+```
 Alternatively, the train.py script can also be run locally as follows:
 ```
 python training/train.py
