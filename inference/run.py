@@ -127,14 +127,12 @@ class IrisInference:
             # Confidence statistics
             max_probs = np.max(probabilities, axis = 1)
             mean_confidence = np.mean(max_probs)
-            low_confidence_samples = np.sum(max_probs < 0.8)
             
             metrics = {
                 'accuracy': float(accuracy),
                 'classification_report': report,
                 'confusion_matrix': conf_matrix.tolist(),
                 'mean_confidence': float(mean_confidence),
-                'low_confidence_samples': int(low_confidence_samples),
                 'total_samples': len(y_true)
             }
             
