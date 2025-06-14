@@ -114,3 +114,4 @@ After inference, check the `inference_results/` directory for:
 - Pandas
 - Scikit-learn
 - Numpy
+- Pytest
