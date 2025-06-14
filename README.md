@@ -39,7 +39,7 @@ MLE_PROJECT/
 ├── settings.json                        # All configurable parameters and settings
 ├── .gitignore
 ├── README.md
-├── utils/ # Utility functions
+├── utils/                               # Utility functions
 └── requirements.txt                     # Base requirements
 ```
 
