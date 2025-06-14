@@ -8,8 +8,6 @@ import sys
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 
 import torch
-from torch.utils.data import TensorDataset, DataLoader
-from torch import nn, optim
 
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)

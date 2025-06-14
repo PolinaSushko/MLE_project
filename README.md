@@ -58,10 +58,10 @@ python data_process/data_processing.py
 **4. Build and Run Training:**
 ```
 # Build training image
-docker build -t iris-training -f ./training/Dockerfile
+docker build -t iris-training -f ./training/Dockerfile .
 
 # Run training
-docker run -v $(pwd)/data:/app/data -v $(pwd)/models:/app/models iris-training
+docker run -it iris-training python training/train.py /bin/bash
 ```
 Alternatively, the train.py script can also be run locally as follows:
 ```
@@ -70,10 +70,10 @@ python training/train.py
 **5. Build and Run Inference:**
 ```
 # Build inference image
-docker build -t iris-inference ./inference/Dockerfile
+docker build -t iris-inference -f ./inference/Dockerfile .
 
 # Run inference
-docker run -v $(pwd)/data:/app/data -v $(pwd)/models:/app/models -v $(pwd)/results:/app/results iris-inference
+docker run -it iris-inference python inference/run.py /bin/bash
 ```
 Alternatively, you can also run the inference script locally as follows:
 ```
