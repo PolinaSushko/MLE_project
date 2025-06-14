@@ -90,7 +90,9 @@ def save_data(df, file_path):
     
 def main():
     """Main data processing pipeline"""
-    logger.info("Starting data processing pipeline")
+    logger.info("="*50)
+    logger.info("STARTING DATA PROCESSING PIPELINE")
+    logger.info("="*50)
 
     try:
         # Load configuration

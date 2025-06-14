@@ -4,14 +4,11 @@ import logging
 import json
 import os
 
-from sklearn.model_selection import train_test_split, KFold
-from sklearn.metrics import accuracy_score, classification_report, precision_score, recall_score, f1_score, roc_curve, auc
+from sklearn.metrics import accuracy_score, classification_report
 
 import torch
 from torch.utils.data import TensorDataset, DataLoader
 from torch import nn, optim
-import torch.nn.functional as F
-from torchmetrics import Accuracy, AUROC
 
 # Setup logging
 logging.basicConfig(level = logging.INFO, format = '%(asctime)s - %(levelname)s - %(message)s')
@@ -40,10 +37,10 @@ class IrisClassifier(nn.Module):
         return x
     
 class IrisTrainer:
-    def __init__(self):
-        pass
+    def __init__(self, config_path = "settings.json"):
+        self.config = self.load_config(config_path)
 
-    def load_config(self, config_path = 'settings.json'):
+    def load_config(self, config_path):
         """Load configuration from JSON file"""
         try:
             with open(config_path, 'r') as f:
@@ -53,10 +50,10 @@ class IrisTrainer:
         except FileNotFoundError:
             raise FileNotFoundError(f"Configuration file {config_path} not found")
 
-    def load_training_data(self, config):
+    def load_training_data(self):
         """Load training data from CSV file"""
         try:
-            train_path = config['paths']['train_path']
+            train_path = self.config['paths']['train_path']
             train_df   = pd.read_csv(train_path)
 
             # Separate features and target
@@ -93,20 +90,20 @@ class IrisTrainer:
             logger.error(f"Error creating DataLoader: {e}")
             raise
 
-    def initialize_model_and_optimizer(self, input_size, config):
+    def initialize_model_and_optimizer(self, input_size):
         """Initialize model, optimizer, and loss function"""
         try:
             # Initialize model
             model = IrisClassifier(
                 input_size = input_size,
-                hidden_size = config['model']['hidden_size'],
-                num_classes = config['model']['num_classes']
+                hidden_size = self.config['model']['hidden_size'],
+                num_classes = self.config['model']['num_classes']
             )
             
             # Initialize optimizer
             optimizer = optim.Adam(
                 model.parameters(),
-                lr = config['model']['learning_rate']
+                lr = self.config['model']['learning_rate']
             )
             
             # Initialize loss function
@@ -201,12 +198,11 @@ class IrisTrainer:
             logger.error(f"Error during model evaluation: {e}")
             raise
 
-    def save_model(self, model, metrics, config):
+    def save_model(self, model, metrics):
         """Save the trained model and metric"""
-
         try:
             # Create models directory if it doesn't exist
-            model_path = config['paths']['model_save_path']
+            model_path = self.config['paths']['model_save_path']
             os.makedirs(os.path.dirname(model_path), exist_ok = True)
             
             # Save model state dict
@@ -222,13 +218,6 @@ class IrisTrainer:
             
             logger.info(f"Model saved to {model_path}")
             
-            # Save metrics separately for easier access
-            metrics_path = model_path.replace('.pth', '_metrics.json')
-            with open(metrics_path, 'w') as f:
-                json.dump(metrics, f, indent = 2, default = str)
-            
-            logger.info(f"Metrics saved to {metrics_path}")
-            
         except Exception as e:
             logger.error(f"Error saving model: {e}")
             raise
@@ -236,29 +225,36 @@ class IrisTrainer:
     def train(self):
         """Complete training pipeline"""
         try:
-            logger.info("Starting training pipeline...")
-
-            config = self.load_config()
+            logger.info("="*50)
+            logger.info("STARTING MODEL TRAINING PIPELINE...")
+            logger.info("="*50)
             
             # Load data
-            X, y = self.load_training_data(config)
+            logger.info("Step 1: Loading training data...")
+            X, y = self.load_training_data()
             
             # Create data loader
+            logger.info("Step 2: Creating data loaders...")
             train_loader = self.create_data_loader(X, y)
             
             # Initialize model and optimizer
-            model, optimizer, criterion = self.initialize_model_and_optimizer(X.shape[1], config)
+            logger.info("Step 3: Initializing model and optimizer...")
+            model, optimizer, criterion = self.initialize_model_and_optimizer(X.shape[1])
             
             # Train model
+            logger.info("Step 4: Training model...")
             trained_model, train_losses, train_accuracies = self.train_model(model, train_loader, optimizer, criterion, 100)
             
             # Evaluate model
+            logger.info("Step 5: Evaluating model on training data...")
             metrics = self.evaluate_model(trained_model, X, y)
             
             # Save model
-            self.save_model(trained_model, metrics, config)
-            
-            logger.info("Training pipeline completed successfully!")
+            logger.info("Step 6: Saving model...")
+            self.save_model(trained_model, metrics)
+
+            logger.info("="*50)
+            logger.info("TRAINING PIPELINE COMPLETED SUCCESSFULLY!")
             
         except Exception as e:
             logger.error(f"Training pipeline failed: {e}")
