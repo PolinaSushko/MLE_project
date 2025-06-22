@@ -16,5 +16,10 @@
         "model_save_path"   : "models/iris_classifier.pth",
         "scaler_save_path"  : "models/scaler.pkl",
         "inference_results" : "inference_results/"
+    },
+    "mlflow": {
+        "experiment_name": "iris_classification",
+        "tracking_uri": "http://127.0.0.1:5000",
+        "model_name" : "iris_classifier"
     }
 }

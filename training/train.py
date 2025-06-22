@@ -12,6 +12,11 @@ import torch
 from torch.utils.data import TensorDataset, DataLoader
 from torch import nn, optim
 
+import mlflow
+import mlflow.pytorch
+import mlflow.sklearn
+from mlflow.models.signature import infer_signature
+
 # Setup logging
 logging.basicConfig(level = logging.INFO, format = '%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -37,7 +42,28 @@ class IrisClassifier(nn.Module):
         x = self.fc3(x)
 
         return x
+
+class ScalerWrapper:
+    """Wrapper for StandardScaler to add predict method for MLflow compatibility"""
+    def __init__(self, scaler):
+        self.scaler = scaler
+        
+    def fit(self, X):
+        return self.scaler.fit(X)
     
+    def transform(self, X):
+        return self.scaler.transform(X)
+    
+    def fit_transform(self, X):
+        return self.scaler.fit_transform(X)
+    
+    def predict(self, X):
+        """Predict method for MLflow compatibility - just transforms the data"""
+        return self.scaler.transform(X)
+    
+    def inverse_transform(self, X):
+        return self.scaler.inverse_transform(X)
+
 class IrisTrainer:
     def __init__(self, config_path = "settings.json"):
         self.config = self.load_config(config_path)
@@ -66,9 +92,29 @@ class IrisTrainer:
                         'model_save_path' : 'models/iris_classifier.pth',
                         'scaler_save_path': 'models/scaler.pkl',
                         'inference_results' : 'inference_results/'
+                    },
+                    'mlflow': {
+                        'experiment_name': 'iris_classification',
+                        'tracking_uri': 'http://127.0.0.1:5000'
                     }
                 }
 
+    def setup_mlflow(self):
+        """Setup MLflow tracking"""
+        try:
+            # Set tracking URI
+            mlflow.set_tracking_uri(self.config['mlflow']['tracking_uri'])
+            
+            # Create an experiment
+            experiment_name = self.config['mlflow']['experiment_name']
+            mlflow.set_experiment(experiment_name)
+            
+            logger.info(f"MLflow experiment set to: {experiment_name}")
+
+        except Exception as e:
+            logger.error(f"Error setting up MLflow: {e}")
+            raise
+    
     def load_and_preprocess_training_data(self):
         """Load and preprocess training data from CSV file"""
         try:
@@ -81,13 +127,15 @@ class IrisTrainer:
             removed_duplicates = initial_rows - len(train_df)
             if removed_duplicates > 0:
                 logger.info(f"Removed {removed_duplicates} duplicate rows")
+                mlflow.log_metric("removed_duplicates", removed_duplicates)
 
             # Separate features and target
             X_train = train_df.drop('target', axis = 1).values
             y_train = train_df['target'].values
 
             # Scale data
-            self.scaler = StandardScaler()
+            base_scaler = StandardScaler()
+            self.scaler = ScalerWrapper(base_scaler)
             X_train_scaled = self.scaler.fit_transform(X_train)
 
             # Save scaler for inference
@@ -96,15 +144,25 @@ class IrisTrainer:
             with open(scaler_path, 'wb') as f:
                 pickle.dump(self.scaler, f)
             logger.info(f"Scaler saved to {scaler_path}")
+            mlflow.sklearn.log_model(self.scaler, "scaler")
             
             # Convert to PyTorch tensors
             X_tensor = torch.tensor(X_train_scaled, dtype = torch.float32)
             y_tensor = torch.tensor(y_train, dtype = torch.long) 
+
+            mlflow.log_metric("train_samples", X_tensor.shape[0])
+            mlflow.log_metric("num_features", X_tensor.shape[1])
+
+            class_distribution = np.bincount(y_train)
+            for i, count in enumerate(class_distribution):
+                mlflow.log_metric(f"class_{i}_count", count)
             
             logger.info(f"Training data loaded and preprocessed: {X_tensor.shape[0]} samples, {X_tensor.shape[1]} features")
             logger.info(f"Class distribution: {np.bincount(y_train)}")
+
+            input_example = X_train_scaled[:3].astype(np.float32)
             
-            return X_tensor, y_tensor
+            return X_tensor, y_tensor, input_example
 
         except FileNotFoundError:
             logger.error(f"Training data file not found: {train_path}")
@@ -118,8 +176,8 @@ class IrisTrainer:
         """Create DataLoader for training"""
         try:
             dataset     = TensorDataset(X, y)
-            data_loader = DataLoader(dataset, batch_size = 16, shuffle = True)
-            logger.info("DataLoader created with batch size: 16")
+            data_loader = DataLoader(dataset, batch_size = self.config['model']['batch_size'], shuffle = True)
+            logger.info(f"DataLoader created with batch size: {self.config['model']['batch_size']}")
 
             return data_loader
             
@@ -145,6 +203,18 @@ class IrisTrainer:
             
             # Initialize loss function
             criterion = nn.CrossEntropyLoss()
+
+            mlflow.log_param("input_size", input_size)
+            mlflow.log_param("hidden_size", self.config['model']['hidden_size'])
+            mlflow.log_param("num_classes", self.config['model']['num_classes'])
+            mlflow.log_param("learning_rate", self.config['model']['learning_rate'])
+            mlflow.log_param("batch_size", self.config['model']['batch_size'])
+            mlflow.log_param("dropout_rate", 0.2)
+            mlflow.log_param("optimizer", "Adam")
+            mlflow.log_param("loss_function", "CrossEntropyLoss")
+
+            total_params = sum(p.numel() for p in model.parameters())
+            mlflow.log_param("total_parameters", total_params)
             
             logger.info("Model, optimizer, and loss function initialized")
             logger.info(f"Model parameters: {sum(p.numel() for p in model.parameters())}")
@@ -166,6 +236,7 @@ class IrisTrainer:
             train_accuracies = []
 
             logger.info(f"Starting training for {num_epochs} epochs...")
+            mlflow.log_param("epochs", num_epochs)
 
             for epoch in range(num_epochs):
                 total_loss      = 0
@@ -198,9 +269,15 @@ class IrisTrainer:
                 train_losses.append(avg_loss)
                 train_accuracies.append(accuracy)
 
+                mlflow.log_metric("train_loss", avg_loss, step = epoch)
+                mlflow.log_metric("train_accuracy", accuracy, step = epoch)
+
                 if (epoch + 1) % 10 == 0 or epoch == 0:
                     logger.info(f'Epoch [{epoch + 1}/{num_epochs}] - Loss: {avg_loss:.4f}, Accuracy: {accuracy:.4f}')
 
+            mlflow.log_metric("final_train_loss", train_losses[-1])
+            mlflow.log_metric("final_train_accuracy", train_accuracies[-1])
+            
             logger.info("Training completed!")
             logger.info(f"Final training accuracy: {train_accuracies[-1]:.4f}")
 
@@ -224,6 +301,18 @@ class IrisTrainer:
                 # Generate classification report
                 report = classification_report(y.numpy(), predicted.numpy(), output_dict = True)
                 
+            mlflow.log_metric("eval_accuracy", accuracy)
+            
+            for class_label, metrics in report.items():
+                if class_label.isdigit():
+                    mlflow.log_metric(f"class_{class_label}_precision", metrics['precision'])
+                    mlflow.log_metric(f"class_{class_label}_recall", metrics['recall'])
+                    mlflow.log_metric(f"class_{class_label}_f1", metrics['f1-score'])
+                elif class_label in ['macro avg', 'weighted avg']:
+                    mlflow.log_metric(f"{class_label.replace(' ', '_')}_precision", metrics['precision'])
+                    mlflow.log_metric(f"{class_label.replace(' ', '_')}_recall", metrics['recall'])
+                    mlflow.log_metric(f"{class_label.replace(' ', '_')}_f1", metrics['f1-score'])
+            
             logger.info(f"Model evaluation completed - Accuracy: {accuracy:.4f}")
             
             return {
@@ -235,7 +324,7 @@ class IrisTrainer:
             logger.error(f"Error during model evaluation: {e}")
             raise
 
-    def save_model(self, model, metrics):
+    def save_model(self, model, metrics, input_example):
         """Save the trained model and metric"""
         try:
             # Create models directory if it doesn't exist
@@ -253,7 +342,25 @@ class IrisTrainer:
                 'metrics': metrics
             }, model_path)
             
+            model.eval()
+            with torch.no_grad():
+                input_tensor = torch.tensor(input_example, dtype = torch.float32)
+                output_example = model(input_tensor).numpy()
+                signature = infer_signature(input_example, output_example)
+            
+            mlflow.pytorch.log_model(
+                pytorch_model = model,
+                artifact_path = "model",
+                signature = signature,
+                input_example = input_example,
+                registered_model_name = self.config['mlflow']['model_name']
+            )
+            
+            # Логування артефактів
+            mlflow.log_artifact(model_path, "traditional_model")
+            
             logger.info(f"Model saved to {model_path}")
+            logger.info("Model logged to MLflow")
             
         except Exception as e:
             logger.error(f"Error saving model: {e}")
@@ -265,36 +372,49 @@ class IrisTrainer:
             logger.info("="*50)
             logger.info("STARTING MODEL TRAINING PIPELINE...")
             logger.info("="*50)
-            
-            # Load data
-            logger.info("Step 1: Loading training data...")
-            X, y = self.load_and_preprocess_training_data()
-            
-            # Create data loader
-            logger.info("Step 2: Creating data loaders...")
-            train_loader = self.create_data_loader(X, y)
-            
-            # Initialize model and optimizer
-            logger.info("Step 3: Initializing model and optimizer...")
-            model, optimizer, criterion = self.initialize_model_and_optimizer(X.shape[1])
-            
-            # Train model
-            logger.info("Step 4: Training model...")
-            trained_model, train_losses, train_accuracies = self.train_model(model, train_loader, optimizer, criterion, 100)
-            
-            # Evaluate model
-            logger.info("Step 5: Evaluating model on training data...")
-            metrics = self.evaluate_model(trained_model, X, y)
-            
-            # Save model
-            logger.info("Step 6: Saving model...")
-            self.save_model(trained_model, metrics)
 
-            logger.info("="*50)
-            logger.info("TRAINING PIPELINE COMPLETED SUCCESSFULLY!")
+            # Setup MLflow
+            self.setup_mlflow()
+            
+            with mlflow.start_run(run_name = f"iris_training_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}"):
+                mlflow.set_tag("model_type", "neural_network")
+                mlflow.set_tag("dataset", "iris")
+                mlflow.set_tag("framework", "pytorch")
+
+                # Load data
+                logger.info("Step 1: Loading training data...")
+                X, y, input_example = self.load_and_preprocess_training_data()
+            
+                # Create data loader
+                logger.info("Step 2: Creating data loaders...")
+                train_loader = self.create_data_loader(X, y)
+                
+                # Initialize model and optimizer
+                logger.info("Step 3: Initializing model and optimizer...")
+                model, optimizer, criterion = self.initialize_model_and_optimizer(X.shape[1])
+            
+                # Train model
+                logger.info("Step 4: Training model...")
+                trained_model, train_losses, train_accuracies = self.train_model(model, train_loader, optimizer, criterion, self.config['model']['epochs'])
+            
+                # Evaluate model
+                logger.info("Step 5: Evaluating model on training data...")
+                metrics = self.evaluate_model(trained_model, X, y)
+            
+                # Save model
+                logger.info("Step 6: Saving model...")
+                self.save_model(trained_model, metrics, input_example)
+
+                logger.info("="*50)
+                logger.info("TRAINING PIPELINE COMPLETED SUCCESSFULLY!")
+
+                return mlflow.active_run().info.run_id
             
         except Exception as e:
             logger.error(f"Training pipeline failed: {e}")
+            if mlflow.active_run():
+                mlflow.set_tag("status", "failed")
+                mlflow.log_param("error", str(e))
             raise
 
 def main():

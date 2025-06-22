@@ -6,14 +6,14 @@ import os
 import sys
 import pickle
 
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
-
 import torch
+
+import mlflow
 
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
 
-from training.train import IrisClassifier
+from training.train import IrisClassifier, ScalerWrapper
 
 # Setup logging
 logging.basicConfig(level = logging.INFO, format = '%(asctime)s - %(levelname)s - %(message)s')
@@ -24,6 +24,10 @@ class IrisInference:
         self.config = self.load_config(config_path)
         self.model  = None
         self.scaler = None
+        self.client = None
+
+        # Setup MLflow
+        self.setup_mlflow()
 
         # Load trained model
         self.load_trained_model()
@@ -44,9 +48,30 @@ class IrisInference:
                         'model_save_path' : 'models/iris_classifier.pth',
                         'scaler_save_path': 'models/scaler.pkl',
                         'inference_results' : 'inference_results/'
+                    },
+                'mlflow': {
+                        'experiment_name': 'iris_classification',
+                        'tracking_uri': 'http://127.0.0.1:5000',
+                        'model_name': 'iris_classifier'
                     }
             }
-        
+
+    def setup_mlflow(self):
+        """Setup MLflow tracking"""
+        try:
+            # Set tracking URI
+            mlflow.set_tracking_uri(self.config['mlflow']['tracking_uri'])
+            
+            # Create an experiment
+            experiment_name = f"{self.config['mlflow']['experiment_name']}_inference"
+            mlflow.set_experiment(experiment_name)
+            
+            logger.info(f"MLflow experiment set to: {experiment_name}")
+
+        except Exception as e:
+            logger.error(f"Error setting up MLflow: {e}")
+            raise
+
     def load_trained_model(self):
         """Load the trained model from file"""
         try:
@@ -79,7 +104,7 @@ class IrisInference:
 
             # Load the scaler
             with open(scaler_path, 'rb') as f:
-                self.scaler = pickle.load(f)
+                self.scaler = ScalerWrapper(pickle.load(f))
 
             logger.info(f"Model and scaler loaded successfully!")
             logger.info(f"Model architecture: {model_config}")
@@ -139,7 +164,7 @@ class IrisInference:
         """Save inference results to files"""
         try:
             results_dir   = os.path.dirname(self.config['paths']['inference_results'])
-            os.makedirs(results_dir, exist_ok=True)
+            os.makedirs(results_dir, exist_ok = True)
             
             # Create detailed results DataFrame
             results_df = original_data.copy()
@@ -152,9 +177,11 @@ class IrisInference:
             
             # Save results
             results_path = os.path.join(results_dir, 'inference_results.csv')
-            results_df.to_csv(results_path, index=False)
+            results_df.to_csv(results_path, index = False)
             
             logger.info(f"Results saved to {results_dir}")
+
+            return results_path
             
         except Exception as e:
             logger.error(f"Failed to save results: {e}")
@@ -166,6 +193,7 @@ class IrisInference:
         print("INFERENCE RESULTS SUMMARY")
         print("="*50)
         print(f"Total samples processed: {len(predictions)}")
+        print(f"Average confidence: {np.mean(np.max(probabilities, axis = 1)):.4f}")
         
         # Simple prediction distribution
         pred_distribution = np.bincount(predictions, minlength = 3)
@@ -176,32 +204,60 @@ class IrisInference:
         
         print("="*50)
 
+    def log_inference_metrics_mlflow(self, predictions, probabilities):
+        """Log inference metrics to MLflow"""
+        try:
+            mlflow.log_metric("inference_samples", len(predictions))
+            mlflow.log_metric("avg_confidence", np.mean(np.max(probabilities, axis = 1)))
+            mlflow.log_metric("min_confidence", np.min(np.max(probabilities, axis = 1)))
+            mlflow.log_metric("max_confidence", np.max(np.max(probabilities, axis = 1)))
+            
+            # Simple prediction distribution
+            pred_distribution = np.bincount(predictions, minlength = 3)
+            for i, count in enumerate(pred_distribution):
+                mlflow.log_metric(f"predicted_class_{i}_count", count)
+                mlflow.log_metric(f"predicted_class_{i}_percentage", count / len(predictions) * 100)
+            
+            mlflow.set_tag("inference_completed", "true")
+            
+        except Exception as e:
+            logger.warning(f"Failed to log inference metrics to MLflow: {e}")
+
     def inference(self):
         """Complete inference pipeline - load model and run predictions"""
         try:
             logger.info("="*50)
             logger.info("STARTING IRIS INFERENCE PIPELINE")
             logger.info("="*50)
-            
-            # Step 1: Load and preprocess inference data
-            logger.info("Step 1: Loading and preprocessing inference data...")
-            X, original_data = self.load_and_preprocess_inference_data()
-            
-            # Step 2: Make predictions
-            logger.info("Step 2: Making predictions...")
-            predictions, probabilities = self.predict(X)
-            
-            # Step 3: Save results
-            logger.info("Step 3: Saving results...")
-            self.save_results(predictions, probabilities, original_data)
-            
-            # Print summary
-            self.print_summary(predictions, probabilities)
-            
-            logger.info("INFERENCE COMPLETED SUCCESSFULLY!")
+
+            with mlflow.start_run(run_name = f"iris_inference_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}"):
+                # Step 1: Load and preprocess inference data
+                logger.info("Step 1: Loading and preprocessing inference data...")
+                X, original_data = self.load_and_preprocess_inference_data()
+                
+                # Step 2: Make predictions
+                logger.info("Step 2: Making predictions...")
+                predictions, probabilities = self.predict(X)
+                
+                # Step 3: Save results
+                logger.info("Step 3: Saving results...")
+                results_path = self.save_results(predictions, probabilities, original_data)
+
+                mlflow.log_artifact(results_path, "inference_results")
+                
+                # Print summary
+                self.print_summary(predictions, probabilities)
+                
+                logger.info("INFERENCE COMPLETED SUCCESSFULLY!")
+                logger.info(f"MLflow run ID: {mlflow.active_run().info.run_id}")
+
+                return mlflow.active_run().info.run_id
             
         except Exception as e:
             logger.error(f"Inference pipeline failed: {e}")
+            if mlflow.active_run():
+                mlflow.set_tag("status", "failed")
+                mlflow.log_param("error", str(e))
             raise
 
 def main():
