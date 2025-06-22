@@ -3,7 +3,9 @@ import numpy as np
 import logging
 import json
 import os
+import pickle
 
+from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import accuracy_score, classification_report
 
 import torch
@@ -16,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 class IrisClassifier(nn.Module):
     """Neural Network model for Iris classification"""
-    def __init__(self, input_size, hidden_size, num_classes):
+    def __init__(self, input_size = 4, hidden_size = 64, num_classes = 3):
         """Initialize the neural network"""
         super(IrisClassifier, self).__init__()
 
@@ -39,6 +41,7 @@ class IrisClassifier(nn.Module):
 class IrisTrainer:
     def __init__(self, config_path = "settings.json"):
         self.config = self.load_config(config_path)
+        self.scaler = None
 
     def load_config(self, config_path):
         """Load configuration from JSON file"""
@@ -48,23 +51,57 @@ class IrisTrainer:
             return config
         
         except FileNotFoundError:
-            raise FileNotFoundError(f"Configuration file {config_path} not found")
+            logger.warning(f"Configuration file {config_path} not found, using default parameters")
+            return {
+                    'model': {
+                        'hidden_size'   : 64,
+                        'num_classes'   : 3,
+                        'learning_rate' : 0.001,
+                        'epochs'        : 100,
+                        'batch_size'    : 16
+                    },
+                    'paths': {
+                        'train_path'      : 'data/iris_train_data.csv',
+                        'inference_path'  : 'data/iris_inference_data.csv',
+                        'model_save_path' : 'models/iris_classifier.pth',
+                        'scaler_save_path': 'models/scaler.pkl',
+                        'inference_results' : 'inference_results/'
+                    }
+                }
 
-    def load_training_data(self):
-        """Load training data from CSV file"""
+    def load_and_preprocess_training_data(self):
+        """Load and preprocess training data from CSV file"""
         try:
             train_path = self.config['paths']['train_path']
             train_df   = pd.read_csv(train_path)
 
+            # Remove any duplicate rows
+            initial_rows = len(train_df)
+            train_df = train_df.drop_duplicates()
+            removed_duplicates = initial_rows - len(train_df)
+            if removed_duplicates > 0:
+                logger.info(f"Removed {removed_duplicates} duplicate rows")
+
             # Separate features and target
             X_train = train_df.drop('target', axis = 1).values
             y_train = train_df['target'].values
+
+            # Scale data
+            self.scaler = StandardScaler()
+            X_train_scaled = self.scaler.fit_transform(X_train)
+
+            # Save scaler for inference
+            scaler_path = self.config['paths']['scaler_save_path']
+            os.makedirs(os.path.dirname(scaler_path), exist_ok = True)
+            with open(scaler_path, 'wb') as f:
+                pickle.dump(self.scaler, f)
+            logger.info(f"Scaler saved to {scaler_path}")
             
             # Convert to PyTorch tensors
-            X_tensor = torch.tensor(X_train, dtype = torch.float32)
+            X_tensor = torch.tensor(X_train_scaled, dtype = torch.float32)
             y_tensor = torch.tensor(y_train, dtype = torch.long) 
             
-            logger.info(f"Training data loaded: {X_tensor.shape[0]} samples, {X_tensor.shape[1]} features")
+            logger.info(f"Training data loaded and preprocessed: {X_tensor.shape[0]} samples, {X_tensor.shape[1]} features")
             logger.info(f"Class distribution: {np.bincount(y_train)}")
             
             return X_tensor, y_tensor
@@ -210,8 +247,8 @@ class IrisTrainer:
                 'model_state_dict': model.state_dict(),
                 'model_config': {
                     'input_size' : 4,
-                    'hidden_size': 64,
-                    'num_classes': 3
+                    'hidden_size': self.config['model']['hidden_size'],
+                    'num_classes': self.config['model']['num_classes']
                 },
                 'metrics': metrics
             }, model_path)
@@ -231,7 +268,7 @@ class IrisTrainer:
             
             # Load data
             logger.info("Step 1: Loading training data...")
-            X, y = self.load_training_data()
+            X, y = self.load_and_preprocess_training_data()
             
             # Create data loader
             logger.info("Step 2: Creating data loaders...")
